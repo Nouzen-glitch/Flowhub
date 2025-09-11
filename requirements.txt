@@ -4,3 +4,4 @@ datetime
 numpy
 altair
 streamlit_autorefresh
+sqlalchemy
