@@ -4,40 +4,52 @@ import datetime
 import streamlit as st
 import altair as alt
 from streamlit_autorefresh import st_autorefresh
+import psycopg2
+from sqlalchemy import create_engine
+from dotenv import load_dotenv
+import os
+from supabase import create_client, Client
 
-path = "matrix_data.csv"
+# Load environment variables or put directly (not recommended for production)
+SUPABASE_URL = "https://xkzgtehagcvzghuupfjm.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inhremd0ZWhhZ2N2emdodXVwZmptIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTc2MDQ5MzEsImV4cCI6MjA3MzE4MDkzMX0.uuoMoqn5VIajJ66aGf2l1_NGAwbzBlr7TW3-KqKbmCw"
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# Example: fetch tasks
+data = supabase.table("tasks").select("*").execute()
+print(data)
+columns = ["Name", "Urgency", "Importance", "Impact", "DueDate",
+           "DaysTillDue", "EstEffort", "ROI", "GoalAlignment", 
+           "Consequence", "Status", "Type"]
+
 # ---------------- Data Handling ----------------
 @st.cache_data(ttl = 5)
+
 def get_df():
-    try:
-        df = pd.read_csv(path)
-    except (pd.errors.EmptyDataError, FileNotFoundError):
-        df = pd.DataFrame({
-            "Name": [],
-            "Urgency": [],
-            "Importance": [],
-            "Impact": [],
-            "Due Date": [],
-            "Days Till Due": [],
-            "Est. effort": [],
-            "ROI": [],
-            "Goal Alignment": [],
-            "Consequence": [],
-            "Status": [],
-            "Type": [],
-        })
-        df.to_csv(path, index=False)
+    response = supabase.table("tasks").select("*").execute()
+    df = pd.DataFrame(response.data)
+    print(df)
+    if not df.empty and "DueDate" in df.columns:
+        df["DueDate"] = pd.to_datetime(df["DueDate"])
     return df
 
-def save_df(df):
-    df.to_csv(path, index=False)
+def save_df(new_task_df):
+    for _, row in new_task_df.iterrows():
+        supabase.table("tasks").insert(row.to_dict()).execute()
+
+
+def remove_task(task_name):
+    supabase.table("tasks").delete().eq("Name", task_name).execute()
+
 def importance_computer(goal_alignment, impact, consequence_of_neglect, effort, w1=0.4, w2=0.3, w3=0.2, w4=0.1):
     return w1*goal_alignment + w2*impact + w3*consequence_of_neglect + w4*effort
 
 def update_urgency(df):
-    dates = pd.to_datetime(df["Due Date"])
+    if df.empty:
+        return df
+    dates = pd.to_datetime(df["DueDate"])
     days_till_due = (dates - pd.to_datetime(datetime.date.today())).dt.days
-    df["Urgency"] = 1/(1+(days_till_due/(df["Est. effort"]*15)))
+    df["urgency"] = 1/(1+(days_till_due/(df["EstEffort"]*15)))
     return df
 
 def weight_computer(df, w1=0.57, w2=0.3, w3=0.13):
@@ -103,6 +115,7 @@ st.markdown("""
 st.markdown('<div class="main-header"><h1>📊 Eisenhower Matrix Dashboard</h1></div>', unsafe_allow_html=True)
 
 df = get_df()
+print(df)
 df = update_urgency(df)
 
 # Initialize session state
@@ -178,9 +191,9 @@ if st.session_state["add_open"]:
         with col2:
             est_effort = 1 - 1/(1 + task_time)
             goal_alignment = st.slider("🎯 Goal Alignment (0-1)", 0.0, 1.0, 0.5, help="How well does this align with your goals?")
-            consequence = st.slider("⚠️ Consequence of Neglect (0-1)", 0.0, 1.0, 0.5, help="What happens if you don't do this?")
-            status = st.selectbox("📊 Status", ["not started", "in progress", "done"])
-            task_type = st.text_input("🏷️ Task Type", placeholder="e.g., Work, Personal, etc.")
+            consequence = st.slider("⚠️ consequence of Neglect (0-1)", 0.0, 1.0, 0.5, help="What happens if you don't do this?")
+            status = st.selectbox("📊 status", ["not started", "in progress", "done"])
+            task_type = st.text_input("🏷️ Task type", placeholder="e.g., Work, Personal, etc.")
 
         col1, col2, col3 = st.columns([1, 1, 2])
         with col2:
@@ -192,22 +205,23 @@ if st.session_state["add_open"]:
             urgency = 1/(1+(days_till_due/(est_effort*15)))
             importance = importance_computer(goal_alignment, impact, consequence, est_effort)
             roi = impact/(impact + np.log2(1+est_effort))
-            new_task = pd.DataFrame({
-                "Name": [name],
-                "Urgency": [urgency],
-                "Importance": [importance],
-                "Impact": [impact],
-                "Due Date": [due_date],
-                "Days Till Due": [days_till_due],
-                "Est. effort": [est_effort],
-                "ROI": [roi],
-                "Goal Alignment": [goal_alignment],
-                "Consequence": [consequence],
-                "Status": [status],
-                "Type": [task_type],
-            })
-            df = pd.concat([df, new_task], ignore_index=True)
-            save_df(df)
+            new_task = pd.DataFrame([{
+                "Name": name,
+                "Urgency": urgency,
+                "Importance": importance,
+                "Impact": impact,
+                "DueDate": due_date.isoformat(),
+                "DaysTillDue": days_till_due,
+                "EstEffort": est_effort,
+                "ROI": roi,
+                "GoalAlignment": goal_alignment,
+                "Consequence": consequence,
+                "Status": status,
+                "Type": task_type,
+            }])
+
+            save_df(new_task)
+
             st.success(f"🎉 Task '{name}' added successfully!")
             st.session_state["add_open"] = False
             st.rerun()
@@ -217,20 +231,23 @@ if st.session_state["remove_open"]:
     st.markdown("### 🗑 Remove Task")
     with st.form("remove_task_form"):
         if not df.empty:
-            remove_task = st.selectbox("Select Task to Remove", df["Name"])
+            remove_task_name = st.selectbox("Select Task to Remove", df["Name"])
             col1, col2, col3 = st.columns([1, 1, 2])
             with col2:
                 submitted = st.form_submit_button("🗑 Remove Task", type="primary")
             
             if submitted:
-                df = df[df["Name"] != remove_task]
-                save_df(df)
-                st.success(f"✅ Task '{remove_task}' removed successfully!")
+                remove_task(remove_task_name)  # <-- call SQLite delete function
+                st.success(f"✅ Task '{remove_task_name}' removed successfully!")
                 st.session_state["remove_open"] = False
                 st.rerun()
         else:
             st.info("📝 No tasks to remove")
-            st.form_submit_button("Close", on_click=lambda: setattr(st.session_state, "remove_open", False))
+            st.form_submit_button(
+                "Close",
+                on_click=lambda: setattr(st.session_state, "remove_open", False)
+            )
+
 
 st.markdown("---")
 
@@ -239,7 +256,7 @@ if not df.empty:
     st.markdown("### 📋 Current Tasks")
     
     # Create styled dataframe
-    display_df = df[["Name", "Status", "Importance", "Urgency", "Impact","ROI", "Due Date", "Type"]].copy()
+    display_df = df[["Name", "Status", "Importance", "Urgency", "Impact","ROI", "DueDate", "Type"]].copy()
     display_df["Importance"] = display_df["Importance"].round(3)
     display_df["Urgency"] = display_df["Urgency"].round(3)
     display_df["Impact"] = display_df["Impact"].round(3)
@@ -332,7 +349,7 @@ if not df.empty:
     ).properties(
         width=600,
         height=700,
-        title=alt.TitleParams("Tasks positioned by Importance vs Urgency", fontSize=16, anchor='start')
+        title=alt.TitleParams("Tasks positioned by importance vs urgency", fontSize=16, anchor='start')
     )
     
     st.altair_chart(eisenhower_chart, use_container_width=True)
