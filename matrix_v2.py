@@ -31,7 +31,6 @@ def get_df():
 
 def save_df(df):
     df.to_csv(path, index=False)
-
 def importance_computer(goal_alignment, impact, consequence_of_neglect, effort, w1=0.4, w2=0.3, w3=0.2, w4=0.1):
     return w1*goal_alignment + w2*impact + w3*consequence_of_neglect + w4*effort
 
