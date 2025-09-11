@@ -28,7 +28,6 @@ columns = ["Name", "Urgency", "Importance", "Impact", "DueDate",
 def get_df():
     response = supabase.table("tasks").select("*").execute()
     df = pd.DataFrame(response.data)
-    print(df)
     if not df.empty and "DueDate" in df.columns:
         df["DueDate"] = pd.to_datetime(df["DueDate"])
     return df
@@ -115,7 +114,6 @@ st.markdown("""
 st.markdown('<div class="main-header"><h1>📊 Eisenhower Matrix Dashboard</h1></div>', unsafe_allow_html=True)
 
 df = get_df()
-print(df)
 df = update_urgency(df)
 
 # Initialize session state
