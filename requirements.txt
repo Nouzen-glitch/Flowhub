@@ -1,7 +1,8 @@
-streamlit
 pandas
-datetime
 numpy
+streamlit
 altair
-streamlit_autorefresh
-psycopg2
+streamlit-autorefresh
+psycopg2-binary
+python-dotenv
+supabase
