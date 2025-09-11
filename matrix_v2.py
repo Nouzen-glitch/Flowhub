@@ -5,7 +5,6 @@ import streamlit as st
 import altair as alt
 from streamlit_autorefresh import st_autorefresh
 import psycopg2
-from sqlalchemy import create_engine
 from dotenv import load_dotenv
 import os
 from supabase import create_client, Client
