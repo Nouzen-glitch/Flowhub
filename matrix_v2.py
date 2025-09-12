@@ -8,33 +8,97 @@ import psycopg2
 from dotenv import load_dotenv
 import os
 from supabase import create_client, Client
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
+import time
+from dataclasses import dataclass
+from typing import List, Dict, Optional
+import json
 
-# Load environment variables or put directly (not recommended for production)
+# Load environment variables
 SUPABASE_URL = "https://xkzgtehagcvzghuupfjm.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inhremd0ZWhhZ2N2emdodXVwZmptIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTc2MDQ5MzEsImV4cCI6MjA3MzE4MDkzMX0.uuoMoqn5VIajJ66aGf2l1_NGAwbzBlr7TW3-KqKbmCw"
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Example: fetch tasks
-data = supabase.table("tasks").select("*").execute()
-print(data)
-columns = ["Name", "Urgency", "Importance", "Impact", "DueDate",
-           "DaysTillDue", "EstEffort", "ROI", "GoalAlignment", 
-           "Consequence", "Status", "Type"]
+# AI Insights Engine
+class ProductivityAI:
+    @staticmethod
+    def analyze_task_patterns(df):
+        if df.empty:
+            return {}
+        
+        insights = {}
+        
+        # Time allocation analysis
+        urgent_important = len(df[(df['Urgency'] > 0.7) & (df['Importance'] > 0.7)])
+        insights['crisis_mode'] = urgent_important / len(df) > 0.3
+        
+        # Productivity score
+        completed_high_impact = len(df[(df['Status'] == 'done') & (df['Impact'] > 0.7)])
+        total_high_impact = len(df[df['Impact'] > 0.7])
+        insights['productivity_score'] = completed_high_impact / max(total_high_impact, 1)
+        
+        # Procrastination detection
+        overdue_important = len(df[(df['DaysTillDue'] < 0) & (df['Importance'] > 0.6)])
+        insights['procrastination_risk'] = overdue_important > 0
+        
+        # Time allocation recommendation
+        quadrant_distribution = {
+            'urgent_important': len(df[(df['Urgency'] > 0.5) & (df['Importance'] > 0.5)]),
+            'important_not_urgent': len(df[(df['Urgency'] <= 0.5) & (df['Importance'] > 0.5)]),
+            'urgent_not_important': len(df[(df['Urgency'] > 0.5) & (df['Importance'] <= 0.5)]),
+            'neither': len(df[(df['Urgency'] <= 0.5) & (df['Importance'] <= 0.5)])
+        }
+        insights['quadrant_distribution'] = quadrant_distribution
+        
+        return insights
+    
+    @staticmethod
+    def generate_recommendations(insights, df):
+        recommendations = []
+        
+        if insights.get('crisis_mode', False):
+            recommendations.append("🚨 You're in crisis mode! 30%+ of tasks are urgent & important. Focus on prevention strategies.")
+        
+        if insights.get('productivity_score', 0) < 0.5:
+            recommendations.append("📈 Your high-impact completion rate is below 50%. Consider breaking down complex tasks.")
+        
+        if insights.get('procrastination_risk', False):
+            recommendations.append("⏰ You have overdue important tasks. Schedule focused work blocks immediately.")
+        
+        # Optimal time allocation suggestion
+        quad_dist = insights.get('quadrant_distribution', {})
+        ideal_important_not_urgent = quad_dist.get('important_not_urgent', 0)
+        if ideal_important_not_urgent < len(df) * 0.6:
+            recommendations.append("🎯 Increase 'Important but Not Urgent' tasks to 60%+ for long-term success.")
+        
+        return recommendations
 
-# ---------------- Data Handling ----------------
-@st.cache_data(ttl = 5)
+@dataclass
+class TaskMetrics:
+    total_tasks: int
+    completion_rate: float
+    avg_importance: float
+    avg_urgency: float
+    burnout_risk: float
 
+# Enhanced Data Handling
+@st.cache_data(ttl=5)
 def get_df():
     response = supabase.table("tasks").select("*").execute()
     df = pd.DataFrame(response.data)
     if not df.empty and "DueDate" in df.columns:
         df["DueDate"] = pd.to_datetime(df["DueDate"])
+        df["DaysTillDue"] = (df["DueDate"] - pd.to_datetime(datetime.date.today())).dt.days
     return df
 
 def save_df(new_task_df):
     for _, row in new_task_df.iterrows():
         supabase.table("tasks").insert(row.to_dict()).execute()
 
+def update_task_status(task_name, new_status):
+    supabase.table("tasks").update({"Status": new_status}).eq("Name", task_name).execute()
 
 def remove_task(task_name):
     supabase.table("tasks").delete().eq("Name", task_name).execute()
@@ -45,22 +109,45 @@ def importance_computer(goal_alignment, impact, consequence_of_neglect, effort, 
 def update_urgency(df):
     if df.empty:
         return df
+    df = df.copy()
     dates = pd.to_datetime(df["DueDate"])
     days_till_due = (dates - pd.to_datetime(datetime.date.today())).dt.days
     df["urgency"] = 1/(1+(days_till_due/(df["EstEffort"]*15)))
+    df["Urgency"] = df["urgency"]
     return df
 
 def weight_computer(df, w1=0.57, w2=0.3, w3=0.13):
-    df_wc = pd.DataFrame({
+    if df.empty:
+        return pd.DataFrame(columns=["Task Name", "Task Weight"])
+    return pd.DataFrame({
         "Task Name": df["Name"],
         "Task Weight": (w1*df["Importance"] + w2*df["Urgency"] + w3*(df["Importance"]*df["Urgency"]))
     })
-    return df_wc
 
-# ---------------- Streamlit Interface ----------------
-st.set_page_config(page_title="Eisenhower Matrix", page_icon="📊", layout="wide")
+def calculate_metrics(df) -> TaskMetrics:
+    if df.empty:
+        return TaskMetrics(0, 0, 0, 0, 0)
+    
+    total = len(df)
+    completed = len(df[df["Status"] == "done"])
+    completion_rate = completed / total if total > 0 else 0
+    avg_importance = df["Importance"].mean()
+    avg_urgency = df["Urgency"].mean()
+    
+    # Burnout risk calculation
+    urgent_important = len(df[(df["Urgency"] > 0.7) & (df["Importance"] > 0.7)])
+    burnout_risk = min(urgent_important / max(total, 1), 1.0)
+    
+    return TaskMetrics(total, completion_rate, avg_importance, avg_urgency, burnout_risk)
 
-# Custom CSS for better styling
+# Streamlit Interface
+st.set_page_config(
+    page_title="Productivity Command Center", 
+    page_icon="🎯", 
+    layout="wide"
+)
+
+# Clean CSS
 st.markdown("""
 <style>
     .main-header {
@@ -77,13 +164,42 @@ st.markdown("""
         font-size: 3rem;
         text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
     }
-    .quadrant-labels {
-        font-size: 14px;
-        font-weight: bold;
-        color: #333;
-        background: rgba(255,255,255,0.8);
-        padding: 4px 8px;
-        border-radius: 4px;
+    .metric-card {
+        background: white;
+        border-radius: 8px;
+        padding: 1.5rem;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        text-align: center;
+        border-left: 4px solid #667eea;
+    }
+    .metric-value {
+        font-size: 2rem;
+        font-weight: 700;
+        color: #667eea;
+        margin: 0;
+    }
+    .metric-label {
+        font-size: 0.9rem;
+        color: #6c757d;
+        margin-top: 0.5rem;
+    }
+    .insight-card {
+        background: linear-gradient(135deg, #ffeaa7, #fab1a0);
+        border-radius: 8px;
+        padding: 1rem;
+        margin: 0.5rem 0;
+        border-left: 4px solid #e17055;
+        color: #2d3436;
+        font-weight: 500;
+    }
+    .recommendation-card {
+        background: linear-gradient(135deg, #a8e6cf, #88d8a3);
+        border-radius: 8px;
+        padding: 1rem;
+        margin: 0.5rem 0;
+        border-left: 4px solid #00b894;
+        color: #2d3436;
+        font-weight: 500;
     }
     .stButton > button {
         width: 100%;
@@ -100,108 +216,319 @@ st.markdown("""
         transform: translateY(-2px);
         box-shadow: 0 4px 8px rgba(0,0,0,0.2);
     }
-    .metric-container {
-        background: #f8f9fa;
-        padding: 1rem;
-        border-radius: 8px;
-        border-left: 4px solid #667eea;
+    .quadrant-label {
+        font-size: 12px;
+        font-weight: bold;
+        color: #333;
+        background: rgba(255,255,255,0.8);
+        padding: 4px 8px;
+        border-radius: 4px;
+    }
+    .tab-content {
+        padding: 2rem 0;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # Header
-st.markdown('<div class="main-header"><h1>📊 Eisenhower Matrix Dashboard</h1></div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header"><h1>🎯 Productivity Command Center</h1></div>', unsafe_allow_html=True)
 
+# Load and process data
 df = get_df()
 df = update_urgency(df)
 
 # Initialize session state
 if "add_open" not in st.session_state:
     st.session_state["add_open"] = False
-if "remove_open" not in st.session_state:
-    st.session_state["remove_open"] = False
 
-# Callback functions to toggle expanders
-def toggle_add_expander():
-    st.session_state["add_open"] = not st.session_state["add_open"]
-    if st.session_state["add_open"]:
-        st.session_state["remove_open"] = False
-
-def toggle_remove_expander():
-    st.session_state["remove_open"] = not st.session_state["remove_open"]
-    if st.session_state["remove_open"]:
-        st.session_state["add_open"] = False
-
-# Task Management Section
-st.markdown("---")
-col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
-
-with col1:
+# Sidebar filters
+with st.sidebar:
+    st.markdown("## Filters")
+    
+    # Time-based filtering
+    time_filter = st.selectbox("Time Horizon", 
+        ["All Tasks", "Today", "This Week", "This Month", "This Quarter"])
+    
+    # Priority filtering
+    priority_filter = st.slider("Min Importance", 0.0, 1.0, 0.0, 0.1)
+    
+    # Category filtering
     if not df.empty:
-        total_tasks = len(df)
-        st.metric("Total Tasks", total_tasks)
+        categories = ["All"] + list(df["Type"].dropna().unique())
+        category_filter = st.selectbox("Category", categories)
     else:
-        st.metric("Total Tasks", 0)
+        category_filter = "All"
 
-with col2:
-    if not df.empty:
-        not_started = len(df[df["Status"] == "not started"])
-        st.metric("Not Started", not_started)
-    else:
-        st.metric("Not Started", 0)
+# Apply filters
+filtered_df = df.copy()
+if not filtered_df.empty:
+    if time_filter != "All Tasks":
+        if time_filter == "Today":
+            filtered_df = filtered_df[filtered_df["DaysTillDue"] == 0]
+        elif time_filter == "This Week":
+            filtered_df = filtered_df[filtered_df["DaysTillDue"] <= 7]
+        elif time_filter == "This Month":
+            filtered_df = filtered_df[filtered_df["DaysTillDue"] <= 30]
+        elif time_filter == "This Quarter":
+            filtered_df = filtered_df[filtered_df["DaysTillDue"] <= 90]
+    
+    filtered_df = filtered_df[filtered_df["Importance"] >= priority_filter]
+    
+    if category_filter != "All":
+        filtered_df = filtered_df[filtered_df["Type"] == category_filter]
 
-with col3:
-    if not df.empty:
-        in_progress = len(df[df["Status"] == "in progress"])
-        st.metric("In Progress", in_progress)
-    else:
-        st.metric("In Progress", 0)
+# Tabs
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "📐 Matrix", "⚡ Actions", "🧠 Analytics"])
 
-with col4:
-    if not df.empty:
-        completed = len(df[df["Status"] == "done"])
-        st.metric("Completed", completed)
-    else:
-        st.metric("Completed", 0)
+with tab1:
+    st.markdown('<div class="tab-content">', unsafe_allow_html=True)
+    
+    # Key metrics
+    metrics = calculate_metrics(filtered_df)
+    
+    col1, col2, col3, col4, col5 = st.columns(5)
+    
+    with col1:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-value">{metrics.total_tasks}</div>
+            <div class="metric-label">Total Tasks</div>
+        </div>
+        """, unsafe_allow_html=True)
 
-st.markdown("---")
+    with col2:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-value">{metrics.completion_rate:.1%}</div>
+            <div class="metric-label">Completion Rate</div>
+        </div>
+        """, unsafe_allow_html=True)
 
-# Control buttons
-col1, col2 = st.columns(2)
-with col1:
-    st.button("➕ Add New Task", on_click=toggle_add_expander, type="primary")
-with col2:
-    st.button("🗑 Remove Task", on_click=toggle_remove_expander, type="secondary")
+    with col3:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-value">{metrics.avg_importance:.2f}</div>
+            <div class="metric-label">Avg Importance</div>
+        </div>
+        """, unsafe_allow_html=True)
 
-# ---- Add Task Form ----
-if st.session_state["add_open"]:
-    st.markdown("### ➕ Add New Task")
-    with st.form("add_task_form"):
+    with col4:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-value">{metrics.avg_urgency:.2f}</div>
+            <div class="metric-label">Avg Urgency</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col5:
+        risk_color = "#e74c3c" if metrics.burnout_risk > 0.7 else "#f39c12" if metrics.burnout_risk > 0.4 else "#27ae60"
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-value" style="color: {risk_color}">{metrics.burnout_risk:.1%}</div>
+            <div class="metric-label">Burnout Risk</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # AI Insights
+    if not filtered_df.empty:
+        ai_insights = ProductivityAI.analyze_task_patterns(filtered_df)
+        recommendations = ProductivityAI.generate_recommendations(ai_insights, filtered_df)
+        
+        st.markdown("### 🤖 AI Insights")
+        
         col1, col2 = st.columns(2)
         
         with col1:
+            st.markdown("#### Performance Analysis")
+            productivity_score = ai_insights.get('productivity_score', 0)
+            if productivity_score >= 0.8:
+                st.markdown(f"<div class='recommendation-card'>🌟 Exceptional: {productivity_score:.1%} high-impact completion</div>", unsafe_allow_html=True)
+            elif productivity_score >= 0.6:
+                st.markdown(f"<div class='insight-card'>📈 Good: {productivity_score:.1%} high-impact completion</div>", unsafe_allow_html=True)
+            else:
+                st.markdown(f"<div class='insight-card'>⚠️ Below target: {productivity_score:.1%} completion rate</div>", unsafe_allow_html=True)
+        
+        with col2:
+            st.markdown("#### Recommendations")
+            for rec in recommendations:
+                st.markdown(f"<div class='recommendation-card'>{rec}</div>", unsafe_allow_html=True)
+
+    # Task overview table
+    if not filtered_df.empty:
+        st.markdown("### 📋 Task Overview")
+        
+        display_df = filtered_df[["Name", "Status", "Type", "Importance", "Urgency", "Impact", "ROI", "DueDate"]].copy()
+        
+        for col in ["Importance", "Urgency", "Impact", "ROI"]:
+            if col in display_df.columns:
+                display_df[col] = display_df[col].round(3)
+        
+        st.dataframe(display_df, use_container_width=True)
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with tab2:
+    st.markdown('<div class="tab-content">', unsafe_allow_html=True)
+    
+    if not filtered_df.empty:
+        # Original Eisenhower Matrix (Altair style)
+        st.markdown("### 📐 Eisenhower Matrix")
+        
+        matrix_plot = filtered_df.copy()
+        
+        # Status colors
+        status_colors = {
+            "not started": "#95a5a6",
+            "in progress": "#3498db", 
+            "done": "#27ae60"
+        }
+        
+        matrix_plot["Color"] = matrix_plot["Status"].map(status_colors)
+        
+        # Create chart
+        base = alt.Chart(matrix_plot).add_selection(alt.selection_single())
+        
+        # Background quadrants
+        quad_data = pd.DataFrame({
+            'x': [0, 0.5, 0, 0.5],
+            'y': [0, 0, 0.5, 0.5],
+            'x2': [0.5, 1, 0.5, 1],
+            'y2': [0.5, 0.5, 1, 1],
+            'quadrant': ['Delete', 'Delegate', 'Decide', 'Do'],
+            'color': ['#f8f9fa', '#fff3cd', '#d1ecf1', '#f5c6cb']
+        })
+        
+        quadrants = alt.Chart(quad_data).mark_rect(
+            opacity=0.3,
+            stroke='#6c757d',
+            strokeWidth=1
+        ).encode(
+            x=alt.X('x:Q', scale=alt.Scale(domain=[0, 1])),
+            y=alt.Y('y:Q', scale=alt.Scale(domain=[0, 1])),
+            x2=alt.X2('x2:Q'),
+            y2=alt.Y2('y2:Q'),
+            color=alt.Color('color:N', scale=None)
+        )
+        
+        # Task points
+        points = base.mark_circle(
+            size=300,
+            stroke='white',
+            strokeWidth=2
+        ).encode(
+            x=alt.X("Urgency:Q", 
+                    scale=alt.Scale(domain=[0, 1]),
+                    axis=alt.Axis(title="Urgency →")),
+            y=alt.Y("Importance:Q", 
+                    scale=alt.Scale(domain=[0, 1]),
+                    axis=alt.Axis(title="↑ Importance")),
+            color=alt.Color("Color:N", scale=None, legend=None),
+            tooltip=["Name:N", "Status:N", "Importance:Q", "Urgency:Q", "Impact:Q", "Type:N"]
+        )
+        
+        # Quadrant labels
+        label_data = pd.DataFrame({
+            'x': [0.75, 0.25, 0.75, 0.25],
+            'y': [0.75, 0.75, 0.25, 0.25],
+            'text': ['DO FIRST\n(Important & Urgent)', 'DECIDE\n(Important, Not Urgent)', 
+                    'DELEGATE\n(Not Important, Urgent)', 'DELETE\n(Not Important, Not Urgent)'],
+            'color': ['#dc3545', '#28a745', '#fd7e14', '#6c757d']
+        })
+        
+        labels = alt.Chart(label_data).mark_text(
+            align='center',
+            baseline='middle',
+            fontSize=11,
+            fontWeight='bold'
+        ).encode(
+            x=alt.X('x:Q', scale=alt.Scale(domain=[0, 1])),
+            y=alt.Y('y:Q', scale=alt.Scale(domain=[0, 1])),
+            text='text:N',
+            color=alt.Color('color:N', scale=None)
+        )
+        
+        # Combine layers
+        eisenhower_chart = (quadrants + points + labels).resolve_scale(
+            color='independent'
+        ).properties(
+            width=600,
+            height=600,
+            title="Tasks positioned by importance vs urgency"
+        )
+        
+        st.altair_chart(eisenhower_chart, use_container_width=True)
+        
+        # Legend
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.markdown("⚫ **Not Started**")  
+        with col2:
+            st.markdown("🔵 **In Progress**")
+        with col3:
+            st.markdown("🟢 **Completed**")
+
+        # Priority ranking
+        st.markdown("### 🏆 Priority Rankings")
+        
+        weights_df = weight_computer(filtered_df).sort_values("Task Weight", ascending=False)
+        weights_df["Task Weight"] = weights_df["Task Weight"].clip(0, 1)
+        
+        bar_chart = alt.Chart(weights_df).mark_bar(
+            color='#667eea',
+            cornerRadiusTopLeft=3,
+            cornerRadiusTopRight=3
+        ).encode(
+            x=alt.X("Task Name:N", 
+                    sort=alt.EncodingSortField(field="Task Weight", order="descending"),
+                    axis=alt.Axis(title="Tasks", labelAngle=-45)),
+            y=alt.Y("Task Weight:Q", 
+                    scale=alt.Scale(domain=[0, 1]),
+                    axis=alt.Axis(title="Priority Score")),
+            tooltip=["Task Name:N", alt.Tooltip("Task Weight:Q", format=".3f")]
+        ).properties(
+            height=400,
+            title="Task Priority Ranking"
+        )
+
+        st.altair_chart(bar_chart, use_container_width=True)
+    
+    else:
+        st.info("Add some tasks to see your Eisenhower Matrix!")
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with tab3:
+    st.markdown('<div class="tab-content">', unsafe_allow_html=True)
+    
+    # Add Task Form
+    st.markdown("### ➕ Add New Task")
+    with st.form("add_task_form", clear_on_submit=True):
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
             name = st.text_input("📝 Task Name", placeholder="Enter task name...")
-            impact = st.slider("💥 Impact (0-1)", 0.0, 1.0, 0.5, help="How much impact will this task have?")
-            days_till_due = st.number_input("📅 Days Till Due", min_value=0, value=1)
-            task_time = st.number_input("⏱️ Estimated Effort (hours)", min_value=0.0, value=1.0)
+            impact = st.slider("💥 Impact", 0.0, 1.0, 0.5, 0.1)
+            days_till_due = st.number_input("📅 Days Till Due", min_value=0, value=7)
             
         with col2:
-            est_effort = 1 - 1/(1 + task_time)
-            goal_alignment = st.slider("🎯 Goal Alignment (0-1)", 0.0, 1.0, 0.5, help="How well does this align with your goals?")
-            consequence = st.slider("⚠️ consequence of Neglect (0-1)", 0.0, 1.0, 0.5, help="What happens if you don't do this?")
-            status = st.selectbox("📊 status", ["not started", "in progress", "done"])
-            task_type = st.text_input("🏷️ Task type", placeholder="e.g., Work, Personal, etc.")
+            task_time = st.number_input("⏱️ Estimated Hours", min_value=0.1, value=2.0, step=0.5)
+            goal_alignment = st.slider("🎯 Goal Alignment", 0.0, 1.0, 0.5, 0.1)
+            consequence = st.slider("⚠️ Consequence of Delay", 0.0, 1.0, 0.5, 0.1)
+            
+        with col3:
+            status = st.selectbox("📊 Status", ["not started", "in progress", "done"])
+            task_type = st.selectbox("🏷️ Category", 
+                ["Strategic", "Operational", "Administrative", "Personal", "Innovation", "Crisis"])
 
-        col1, col2, col3 = st.columns([1, 1, 2])
-        with col2:
-            submitted = st.form_submit_button("✅ Add Task", type="primary")
+        submitted = st.form_submit_button("✅ Add Task", type="primary")
         
-        if submitted and name:  # Only add if name is provided
-            # Save task
+        if submitted and name:
+            est_effort = 1 - 1/(1 + task_time)
             due_date = datetime.date.today() + datetime.timedelta(days=days_till_due)
             urgency = 1/(1+(days_till_due/(est_effort*15)))
             importance = importance_computer(goal_alignment, impact, consequence, est_effort)
             roi = impact/(impact + np.log2(1+est_effort))
+            
             new_task = pd.DataFrame([{
                 "Name": name,
                 "Urgency": urgency,
@@ -214,213 +541,209 @@ if st.session_state["add_open"]:
                 "GoalAlignment": goal_alignment,
                 "Consequence": consequence,
                 "Status": status,
-                "Type": task_type,
+                "Type": task_type
             }])
 
             save_df(new_task)
-
             st.success(f"🎉 Task '{name}' added successfully!")
-            st.session_state["add_open"] = False
             st.rerun()
 
-# ---- Remove Task Form ----
-if st.session_state["remove_open"]:
-    st.markdown("### 🗑 Remove Task")
-    with st.form("remove_task_form"):
-        if not df.empty:
-            remove_task_name = st.selectbox("Select Task to Remove", df["Name"])
-            col1, col2, col3 = st.columns([1, 1, 2])
-            with col2:
-                submitted = st.form_submit_button("🗑 Remove Task", type="primary")
-            
-            if submitted:
-                remove_task(remove_task_name)  # <-- call SQLite delete function
-                st.success(f"✅ Task '{remove_task_name}' removed successfully!")
-                st.session_state["remove_open"] = False
+    st.markdown("---")
+
+    # Quick Actions
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("### 🗑 Remove Task")
+        if not filtered_df.empty:
+            remove_task_name = st.selectbox("Select Task to Remove", filtered_df["Name"])
+            if st.button("🗑 Remove Task", type="secondary"):
+                remove_task(remove_task_name)
+                st.success(f"✅ Task '{remove_task_name}' removed!")
                 st.rerun()
         else:
-            st.info("📝 No tasks to remove")
-            st.form_submit_button(
-                "Close",
-                on_click=lambda: setattr(st.session_state, "remove_open", False)
-            )
-
-
-st.markdown("---")
-
-if not df.empty:
-    # ---- Task Table ----
-    st.markdown("### 📋 Current Tasks")
+            st.info("No tasks to remove")
     
-    # Create styled dataframe
-    display_df = df[["Name", "Status", "Importance", "Urgency", "Impact","ROI", "DueDate", "Type"]].copy()
-    display_df["Importance"] = display_df["Importance"].round(3)
-    display_df["Urgency"] = display_df["Urgency"].round(3)
-    display_df["Impact"] = display_df["Impact"].round(3)
-    display_df["ROI"] = display_df["ROI"].round(3)
-    
-    st.dataframe(display_df, use_container_width=True)
-
-    # ---- Eisenhower Matrix Plot ----
-    st.markdown("### 📐 Eisenhower Matrix")
-    
-    matrix_plot = df.copy()
-    
-    # Define colors for different statuses
-    status_colors = {
-        "not started": "#95a5a6",  # Gray
-        "in progress": "#3498db",  # Blue
-        "done": "#27ae60"          # Green
-    }
-    
-    matrix_plot["Color"] = matrix_plot["Status"].map(status_colors)
-    
-    # Create the Eisenhower matrix chart
-    base = alt.Chart(matrix_plot).add_selection(
-        alt.selection_single()
-    )
-    
-    # Background rectangles for quadrants
-    quad_data = pd.DataFrame({
-        'x': [0, 0.5, 0, 0.5],
-        'y': [0, 0, 0.5, 0.5],
-        'x2': [0.5, 1, 0.5, 1],
-        'y2': [0.5, 0.5, 1, 1],
-        'quadrant': ['Not Urgent/Not Important', 'Urgent/Not Important', 
-                    'Not Urgent/Important', 'Urgent/Important'],
-        'color': ['#f8f9fa', '#fff3cd', '#d1ecf1', '#f5c6cb']
-    })
-    
-    quadrants = alt.Chart(quad_data).mark_rect(
-        opacity=0.3,
-        stroke='#6c757d',
-        strokeWidth=1
-    ).encode(
-        x=alt.X('x:Q', scale=alt.Scale(domain=[0, 1])),
-        y=alt.Y('y:Q', scale=alt.Scale(domain=[0, 1])),
-        x2=alt.X2('x2:Q'),
-        y2=alt.Y2('y2:Q'),
-        color=alt.Color('color:N', scale=None)
-    )
-    
-    # Task points
-    points = base.mark_circle(
-        size=300,
-        stroke='white',
-        strokeWidth=2
-    ).encode(
-        x=alt.X("Urgency:Q", 
-                scale=alt.Scale(domain=[0, 1]),
-                axis=alt.Axis(title="Urgency →", titleFontSize=14, labelFontSize=12)),
-        y=alt.Y("Importance:Q", 
-                scale=alt.Scale(domain=[0, 1]),
-                axis=alt.Axis(title="↑ Importance", titleFontSize=14, labelFontSize=12)),
-        color=alt.Color("Color:N", scale=None, legend=None),
-        tooltip=["Name:N", "Status:N", "Importance:Q", "Urgency:Q", "Impact:Q", "Type:N"]
-    )
-    
-    # Quadrant labels
-    label_data = pd.DataFrame({
-        'x': [0.75, 0.25, 0.75, 0.25],
-        'y': [0.75, 0.75, 0.25, 0.25],
-        'text': ['DO FIRST\n(Important & Urgent)', 'DECIDE\n(Important, Not Urgent)', 
-                'DELEGATE\n(Not Important, Urgent)', 'DELETE\n(Not Important, Not Urgent)'],
-        'color': ['#dc3545', '#28a745', '#fd7e14', '#6c757d']
-    })
-    
-    labels = alt.Chart(label_data).mark_text(
-        align='center',
-        baseline='middle',
-        fontSize=11,
-        fontWeight='bold'
-    ).encode(
-        x=alt.X('x:Q', scale=alt.Scale(domain=[0, 1])),
-        y=alt.Y('y:Q', scale=alt.Scale(domain=[0, 1])),
-        text='text:N',
-        color=alt.Color('color:N', scale=None)
-    )
-    
-    # Combine all layers
-    eisenhower_chart = (quadrants + points + labels).resolve_scale(
-        color='independent'
-    ).properties(
-        width=600,
-        height=700,
-        title=alt.TitleParams("Tasks positioned by importance vs urgency", fontSize=16, anchor='start')
-    )
-    
-    st.altair_chart(eisenhower_chart, use_container_width=True)
-    
-    # Legend
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.markdown("⚫ **Not Started**")  
     with col2:
-        st.markdown("🔵 **In Progress**")
+        st.markdown("### ⚡ Bulk Update")
+        if not filtered_df.empty:
+            tasks_to_update = st.multiselect("Select Tasks", filtered_df["Name"])
+            new_status = st.selectbox("New Status", ["not started", "in progress", "done"])
+            
+            if st.button("🔄 Update Selected") and tasks_to_update:
+                for task in tasks_to_update:
+                    update_task_status(task, new_status)
+                st.success(f"✅ Updated {len(tasks_to_update)} tasks!")
+                st.rerun()
+        else:
+            st.info("No tasks available")
+    
     with col3:
-        st.markdown("🟢 **Completed**")
+        st.markdown("### 📊 Export")
+        if not filtered_df.empty:
+            csv = filtered_df.to_csv(index=False)
+            st.download_button(
+                "📥 Download CSV",
+                csv,
+                "tasks_export.csv",
+                "text/csv",
+                type="secondary"
+            )
+        else:
+            st.info("No data to export")
+    
+    st.markdown('</div>', unsafe_allow_html=True)
 
-    # ---- Weighted Task Priority ----
-    st.markdown("### 🏆 Task Priority (Weighted Score)")
-    weights_df = weight_computer(df).sort_values("Task Weight", ascending=False)
+with tab4:
+    st.markdown('<div class="tab-content">', unsafe_allow_html=True)
     
-    # Ensure Task Weight is clamped to 0-1 range
-    weights_df["Task Weight"] = weights_df["Task Weight"].clip(0, 1)
-    
-    bar_chart = alt.Chart(weights_df).mark_bar(
-        color='#667eea',
-        cornerRadiusTopLeft=3,
-        cornerRadiusTopRight=3
-    ).encode(
-        x=alt.X("Task Name:N", 
-                sort=alt.EncodingSortField(field="Task Weight", order="descending"),
-                axis=alt.Axis(title="Tasks", labelAngle=-45, titleFontSize=14)),
-        y=alt.Y("Task Weight:Q", 
-                scale=alt.Scale(domain=[0, 1]),
-                axis=alt.Axis(title="Priority Score", titleFontSize=14)),
-        tooltip=["Task Name:N", alt.Tooltip("Task Weight:Q", format=".3f")]
-    ).properties(
-        height=400,
-        title=alt.TitleParams("Task Priority Ranking (Higher = More Important)", fontSize=16, anchor='start')
-    )
+    if not filtered_df.empty:
+        # Personal optimization
+        st.markdown("### 🧠 Personal Optimization")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("#### ⚡ Energy Management")
+            high_impact_tasks = len(filtered_df[filtered_df['Impact'] > 0.7])
+            critical_tasks = len(filtered_df[filtered_df['PriorityLevel'] == 'Critical']) if 'PriorityLevel' in filtered_df.columns else 0
+            
+            st.metric("High-Impact Tasks", high_impact_tasks)
+            st.metric("Critical Tasks", critical_tasks)
+            
+            if critical_tasks > 3:
+                st.warning("⚠️ Too many critical tasks - consider re-prioritizing")
+            else:
+                st.success("✅ Manageable critical task load")
+        
+        with col2:
+            st.markdown("#### 🎯 Focus Optimization")
+            deep_work_tasks = filtered_df[
+                (filtered_df['EstEffort'] > 0.6) & (filtered_df['Importance'] > 0.6)
+            ]
+            shallow_tasks = filtered_df[
+                (filtered_df['EstEffort'] <= 0.3) | (filtered_df['Importance'] <= 0.4)
+            ]
+            
+            st.metric("Deep Work Sessions", len(deep_work_tasks))
+            st.metric("Quick Wins", len(shallow_tasks))
+            
+            if len(deep_work_tasks) > 0:
+                st.success(f"📚 Schedule {len(deep_work_tasks)} deep work blocks")
+            
+            if len(shallow_tasks) > 5:
+                st.info(f"⚡ Batch {len(shallow_tasks)} quick tasks together")
 
-    st.altair_chart(bar_chart, use_container_width=True)
-    
-else:
-    # Empty state
-    st.markdown("### 🌟 Welcome to Your Eisenhower Matrix!")
-    st.info("👆 Click 'Add New Task' above to get started with organizing your tasks by importance and urgency.")
-    
-    # Show example matrix
-    st.markdown("### 📖 How the Eisenhower Matrix Works:")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("""
-        **🔴 DO FIRST (Important & Urgent)**
-        - Crises and emergencies
-        - Deadline-driven projects
-        - Last-minute preparations
-        """)
+        # Analytics charts
+        st.markdown("### 💡 Analytics")
         
-        st.markdown("""
-        **🟠 DELEGATE (Not Important, Urgent)**
-        - Interruptions
-        - Some meetings
-        - Some phone calls
-        """)
-    
-    with col2:
-        st.markdown("""
-        **🟢 DECIDE (Important, Not Urgent)**
-        - Planning and strategy
-        - Learning and development
-        - Exercise and health
-        """)
+        col1, col2 = st.columns(2)
         
-        st.markdown("""
-        **⚫ DELETE (Not Important, Not Urgent)**
-        - Time wasters
-        - Excessive social media
-        - Unnecessary activities
-        """)
+        with col1:
+            # Time allocation by category
+            category_effort = filtered_df.groupby('Type')['EstEffort'].sum().sort_values(ascending=False)
+            if len(category_effort) > 0:
+                time_fig = px.pie(
+                    values=category_effort.values,
+                    names=category_effort.index,
+                    title="Time Investment by Category"
+                )
+                st.plotly_chart(time_fig, use_container_width=True)
+        
+        with col2:
+            # Completion quality
+            completed_df = filtered_df[filtered_df['Status'] == 'done']
+            if not completed_df.empty:
+                avg_completed_importance = completed_df['Importance'].mean()
+                
+                st.metric("Completion Quality Score", f"{avg_completed_importance:.2f}")
+                
+                if avg_completed_importance > 0.7:
+                    st.success("🌟 You're completing high-value tasks!")
+                elif avg_completed_importance > 0.5:
+                    st.info("📈 Good focus on important work")
+                else:
+                    st.warning("🎯 Focus more on high-importance tasks")
+
+        # Advanced analytics
+        if len(filtered_df) >= 5:
+            st.markdown("### 🔮 Predictive Insights")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Completion forecast
+                completed_tasks = len(filtered_df[filtered_df['Status'] == 'done'])
+                remaining_tasks = len(filtered_df[filtered_df['Status'] != 'done'])
+                
+                if completed_tasks > 0:
+                    completion_velocity = completed_tasks / len(filtered_df)
+                    days_to_complete = remaining_tasks / max(completion_velocity * len(filtered_df) / 7, 0.1)
+                    
+                    forecast_date = datetime.date.today() + datetime.timedelta(days=int(days_to_complete))
+                    st.success(f"📈 Projected completion: {forecast_date.strftime('%B %d, %Y')}")
+                else:
+                    st.warning("⏳ Start completing tasks to generate forecast")
+            
+            with col2:
+                # Optimization opportunities
+                low_importance = filtered_df[filtered_df['Importance'] < 0.3]
+                high_effort_low_impact = filtered_df[(filtered_df['EstEffort'] > 0.7) & (filtered_df['Impact'] < 0.4)]
+                
+                if len(low_importance) > 0:
+                    st.info(f"🗑️ {len(low_importance)} tasks could be eliminated")
+                
+                if len(high_effort_low_impact) > 0:
+                    st.warning(f"⚡ {len(high_effort_low_impact)} high-effort, low-impact tasks need review")
+
+        # Comprehensive analytics
+        with st.expander("📊 Advanced Analytics", expanded=False):
+            if len(filtered_df) >= 3:
+                fig_analytics = make_subplots(
+                    rows=2, cols=2,
+                    subplot_titles=('Task Distribution by Status', 'Importance vs Urgency',
+                                  'ROI Distribution', 'Effort vs Impact'),
+                    specs=[[{'type': 'pie'}, {'type': 'scatter'}],
+                           [{'type': 'histogram'}, {'type': 'scatter'}]]
+                )
+                
+                # Status distribution
+                status_counts = filtered_df['Status'].value_counts()
+                fig_analytics.add_trace(
+                    go.Pie(labels=status_counts.index, values=status_counts.values, name="Status"),
+                    row=1, col=1
+                )
+                
+                # Importance vs Urgency
+                fig_analytics.add_trace(
+                    go.Scatter(x=filtered_df['Urgency'], y=filtered_df['Importance'],
+                              mode='markers', text=filtered_df['Name'],
+                              marker=dict(size=10, opacity=0.7), name="Tasks"),
+                    row=1, col=2
+                )
+                
+                # ROI distribution
+                fig_analytics.add_trace(
+                    go.Histogram(x=filtered_df['ROI'], nbinsx=10, name="ROI"),
+                    row=2, col=1
+                )
+                
+                # Effort vs Impact
+                fig_analytics.add_trace(
+                    go.Scatter(x=filtered_df['EstEffort'], y=filtered_df['Impact'],
+                              mode='markers', text=filtered_df['Name'],
+                              marker=dict(size=10, opacity=0.7), name="Effort vs Impact"),
+                    row=2, col=2
+                )
+                
+                fig_analytics.update_layout(height=600, showlegend=False)
+                st.plotly_chart(fig_analytics, use_container_width=True)
+
+    else:
+        st.info("Add some tasks to see analytics and insights!")
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# Footer
+st.markdown("---")
+st.markdown("**System Status:** 🟢 Operational | " + datetime.datetime.now().strftime("%H:%M:%S"))
