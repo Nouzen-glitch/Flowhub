@@ -14,12 +14,143 @@ from plotly.subplots import make_subplots
 import time
 from dataclasses import dataclass
 from typing import List, Dict, Optional
-import json
 
 # Load environment variables
 SUPABASE_URL = "https://xkzgtehagcvzghuupfjm.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inhremd0ZWhhZ2N2emdodXVwZmptIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTc2MDQ5MzEsImV4cCI6MjA3MzE4MDkzMX0.uuoMoqn5VIajJ66aGf2l1_NGAwbzBlr7TW3-KqKbmCw"
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# Authentication Section
+if "user" not in st.session_state:
+    st.session_state["user"] = None
+
+# Professional Authentication UI
+if st.session_state["user"] is None:
+    # Create a centered authentication container
+    st.markdown("""
+    <div style="
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        min-height: 25vh;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        margin: -1rem;
+        padding: 2rem;
+    ">
+        <div style="
+            background: transparent;
+            padding: 3rem;
+            border-radius: 0px;
+            box-shadow: 0 0px 0px rgba(0,0,0,0.1);
+            width: 100%;
+            max-width: 400px;
+            text-align: center;
+        ">
+            <h1 style="
+                color: #FFFFFF;
+                margin-bottom: 0rem;
+                font-size: 5rem;
+                font-weight: 600;
+            ">🎯MyFlow</h1>
+    """, unsafe_allow_html=True)
+    
+    # Authentication tabs
+    auth_tab1, auth_tab2 = st.tabs(["Sign In", "Create Account"])
+    
+    with auth_tab1:
+        with st.form("login_form", clear_on_submit=False):
+            st.markdown("### Sign In to Your Account")
+            email = st.text_input("📧 Email Address", placeholder="Enter your email")
+            password = st.text_input("🔒 Password", type="password", placeholder="Enter your password")
+            
+            col1, col2 = st.columns([1, 1])
+            with col1:
+                remember_me = st.checkbox("Remember me")
+            with col2:
+                st.markdown("[Forgot password?](#)")
+            
+            login_btn = st.form_submit_button("🚀 Sign In", type="primary", use_container_width=True)
+            
+            if login_btn:
+                if email and password:
+                    try:
+                        with st.spinner("Signing you in..."):
+                            res = supabase.auth.sign_in_with_password({
+                                "email": email,
+                                "password": password
+                            })
+                            st.session_state["user"] = res.user
+                            st.success("✅ Welcome back!")
+                            time.sleep(1)
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Sign in failed: {str(e)}")
+                else:
+                    st.error("❌ Please fill in all fields")
+    
+    with auth_tab2:
+        with st.form("signup_form", clear_on_submit=False):
+            st.markdown("### Create Your Account")
+            email = st.text_input("📧 Email Address", placeholder="Enter your email")
+            password = st.text_input("🔒 Password", type="password", placeholder="Create a password")
+            confirm_password = st.text_input("🔒 Confirm Password", type="password", placeholder="Confirm your password")
+            
+            terms_accepted = st.checkbox("I agree to the Terms of Service and Privacy Policy")
+            
+            signup_btn = st.form_submit_button("✨ Create Account", type="primary", use_container_width=True)
+            
+            if signup_btn:
+                if email and password and confirm_password:
+                    if password != confirm_password:
+                        st.error("❌ Passwords don't match")
+                    elif len(password) < 6:
+                        st.error("❌ Password must be at least 6 characters")
+                    elif not terms_accepted:
+                        st.error("❌ Please accept the terms and conditions")
+                    else:
+                        try:
+                            with st.spinner("Creating your account..."):
+                                res = supabase.auth.sign_up({
+                                    "email": email,
+                                    "password": password
+                                })
+                                st.success("🎉 Account created successfully! Please sign in.")
+                                time.sleep(2)
+                                st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Account creation failed: {str(e)}")
+                else:
+                    st.error("❌ Please fill in all fields")
+    
+    st.markdown("""
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Hide the main content when not authenticated
+    st.stop()
+
+else:
+    # User is logged in - show user info in sidebar
+    with st.sidebar:
+        st.markdown("""
+        <div style="
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 1.5rem;
+            border-radius: 10px;
+            color: white;
+            text-align: center;
+            margin-bottom: 2rem;
+        ">
+            <h3 style="margin: 0; font-size: 1.2rem;">👋 Welcome back!</h3>
+            <p style="margin: 0.5rem 0 0 0; opacity: 0.9;">{}</p>
+        </div>
+        """.format(st.session_state['user'].email), unsafe_allow_html=True)
+        
+        if st.button("🚪 Sign Out", use_container_width=True):
+            supabase.auth.sign_out()
+            st.session_state["user"] = None
+            st.rerun()
 
 # AI Insights Engine
 class ProductivityAI:
@@ -86,7 +217,13 @@ class TaskMetrics:
 # Enhanced Data Handling
 @st.cache_data(ttl=5)
 def get_df():
-    response = supabase.table("tasks").select("*").execute()
+    if st.session_state["user"] is None:
+        return pd.DataFrame()
+
+    response = supabase.table("tasks")\
+        .select("*")\
+        .eq("user_id", st.session_state["user"].id)\
+        .execute()
     df = pd.DataFrame(response.data)
     if not df.empty and "DueDate" in df.columns:
         df["DueDate"] = pd.to_datetime(df["DueDate"])
@@ -94,14 +231,36 @@ def get_df():
     return df
 
 def save_df(new_task_df):
+    if st.session_state["user"] is None:
+        return False
+    
+    # Fetch existing task names for the current user
+    existing_tasks = supabase.table("tasks").select("Name").eq("user_id", st.session_state["user"].id).execute()
+    existing_names = {task["Name"] for task in existing_tasks.data}
+
     for _, row in new_task_df.iterrows():
-        supabase.table("tasks").insert(row.to_dict()).execute()
+        task_name = row["Name"]
+        if task_name in existing_names:
+            st.error(f"❌ Task name '{task_name}' already exists for your account. Please choose a different name.")
+            return False
+        
+        # Add the user_id to the task before saving
+        row_dict = row.to_dict()
+        row_dict["user_id"] = st.session_state["user"].id
+        supabase.table("tasks").insert(row_dict).execute()
+    
+    return True
+
 
 def update_task_status(task_name, new_status):
-    supabase.table("tasks").update({"Status": new_status}).eq("Name", task_name).execute()
+    if st.session_state["user"] is None:
+        return
+    supabase.table("tasks").update({"Status": new_status}).eq("Name", task_name).eq("user_id", st.session_state["user"].id).execute()
 
 def remove_task(task_name):
-    supabase.table("tasks").delete().eq("Name", task_name).execute()
+    if st.session_state["user"] is None:
+        return
+    supabase.table("tasks").delete().eq("Name", task_name).eq("user_id", st.session_state["user"].id).execute()
 
 def importance_computer(goal_alignment, impact, consequence_of_neglect, effort, w1=0.4, w2=0.3, w3=0.2, w4=0.1):
     return w1*goal_alignment + w2*impact + w3*consequence_of_neglect + w4*effort
@@ -130,15 +289,15 @@ def calculate_metrics(df) -> TaskMetrics:
     
     total = len(df)
     completed = len(df[df["Status"] == "done"])
-    completion_rate = completed / total if total > 0 else 0
-    avg_importance = df["Importance"].mean()
-    avg_urgency = df["Urgency"].mean()
+    completion_rate = round(completed / total, 2) if total > 0 else 0
+    avg_importance = round(df["Importance"].mean(), 2)
+    avg_urgency = round(df["Urgency"].mean(), 2)
     
-    # Burnout risk calculation
     urgent_important = len(df[(df["Urgency"] > 0.7) & (df["Importance"] > 0.7)])
-    burnout_risk = min(urgent_important / max(total, 1), 1.0)
+    burnout_risk = round(min(urgent_important / max(total, 1), 1.0), 2)
     
     return TaskMetrics(total, completion_rate, avg_importance, avg_urgency, burnout_risk)
+
 
 # Streamlit Interface
 st.set_page_config(
@@ -359,9 +518,9 @@ with tab1:
         
         display_df = filtered_df[["Name", "Status", "Type", "Importance", "Urgency", "Impact", "ROI", "DueDate"]].copy()
         
-        for col in ["Importance", "Urgency", "Impact", "ROI"]:
+        for col in ["Importance", "Urgency", "Impact", "ROI", "GoalAlignment", "Consequence", "EstEffort"]:
             if col in display_df.columns:
-                display_df[col] = display_df[col].round(3)
+                display_df[col] = display_df[col].round(2)
         
         st.dataframe(display_df, use_container_width=True)
     
@@ -374,14 +533,17 @@ with tab2:
         # Original Eisenhower Matrix (Altair style)
         st.markdown("### 📐 Eisenhower Matrix")
         
-        matrix_plot = filtered_df.copy()
-        
         # Status colors
         status_colors = {
             "not started": "#95a5a6",
             "in progress": "#3498db", 
             "done": "#27ae60"
         }
+
+        matrix_plot = filtered_df.copy()
+        matrix_plot["Color"] = matrix_plot["Status"].map(status_colors)
+        matrix_plot["id"] = matrix_plot.index.astype(str)
+
         
         matrix_plot["Color"] = matrix_plot["Status"].map(status_colors)
         
@@ -423,7 +585,8 @@ with tab2:
                     scale=alt.Scale(domain=[0, 1]),
                     axis=alt.Axis(title="↑ Importance")),
             color=alt.Color("Color:N", scale=None, legend=None),
-            tooltip=["Name:N", "Status:N", "Importance:Q", "Urgency:Q", "Impact:Q", "Type:N"]
+            tooltip=["Name:N", "Status:N", "Importance:Q", "Urgency:Q", "Impact:Q", "Type:N"],
+            key="id:N"
         )
         
         # Quadrant labels
@@ -525,9 +688,9 @@ with tab3:
         if submitted and name:
             est_effort = 1 - 1/(1 + task_time)
             due_date = datetime.date.today() + datetime.timedelta(days=days_till_due)
-            urgency = 1/(1+(days_till_due/(est_effort*15)))
-            importance = importance_computer(goal_alignment, impact, consequence, est_effort)
-            roi = impact/(impact + np.log2(1+est_effort))
+            urgency = round(1 / (1 + (days_till_due / (est_effort * 15))), 2)
+            importance = round(importance_computer(goal_alignment, impact, consequence, est_effort), 2)
+            roi = round(impact / (impact + np.log2(1 + est_effort)), 2)
             
             new_task = pd.DataFrame([{
                 "Name": name,
@@ -544,9 +707,9 @@ with tab3:
                 "Type": task_type
             }])
 
-            save_df(new_task)
-            st.success(f"🎉 Task '{name}' added successfully!")
-            st.rerun()
+            if save_df(new_task):
+                st.success(f"🎉 Task '{name}' added successfully!")
+                st.rerun()
 
     st.markdown("---")
 
