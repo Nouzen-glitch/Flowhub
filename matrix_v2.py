@@ -16,8 +16,8 @@ from dataclasses import dataclass
 from typing import List, Dict, Optional
 
 # Load environment variables
-SUPABASE_URL = "https://xkzgtehagcvzghuupfjm.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inhremd0ZWhhZ2N2emdodXVwZmptIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTc2MDQ5MzEsImV4cCI6MjA3MzE4MDkzMX0.uuoMoqn5VIajJ66aGf2l1_NGAwbzBlr7TW3-KqKbmCw"
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Authentication Section
@@ -437,7 +437,26 @@ if not filtered_df.empty:
         filtered_df = filtered_df[filtered_df["Type"] == category_filter]
 
 # Tabs
+if "active_tab" not in st.session_state:
+    st.session_state.active_tab = 0
+
+# Tabs
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "📐 Matrix", "⚡ Actions", "🧠 Analytics"])
+
+
+# Set active tab based on session state
+if st.session_state.active_tab == 0:  # Dashboard tab
+    st.session_state.active_tab = 0
+
+if st.session_state.active_tab == 1:  # Matrix tab
+    st.session_state.active_tab = 1
+
+if st.session_state.active_tab == 2:  # Actions tab
+    st.session_state.active_tab = 2
+
+if st.session_state.active_tab == 3:  # Analytics tab
+    st.session_state.active_tab = 3
+
 
 with tab1:
     st.markdown('<div class="tab-content">', unsafe_allow_html=True)
@@ -709,6 +728,8 @@ with tab3:
 
             if save_df(new_task):
                 st.success(f"🎉 Task '{name}' added successfully!")
+                st.session_state.active_tab = 2  # Keep on Actions tab (0-indexed)
+                time.sleep(1)
                 st.rerun()
 
     st.markdown("---")
@@ -718,26 +739,72 @@ with tab3:
     
     with col1:
         st.markdown("### 🗑 Remove Task")
+        
+        # Initialize session state for remove task success
+        if "remove_task_success" not in st.session_state:
+            st.session_state.remove_task_success = False
+        
         if not filtered_df.empty:
-            remove_task_name = st.selectbox("Select Task to Remove", filtered_df["Name"])
-            if st.button("🗑 Remove Task", type="secondary"):
-                remove_task(remove_task_name)
-                st.success(f"✅ Task '{remove_task_name}' removed!")
-                st.rerun()
+            with st.form("remove_task_form"):
+                remove_task_name = st.selectbox("Select Task to Remove", filtered_df["Name"])
+                submitted = st.form_submit_button("🗑 Remove Task", type="secondary")
+                
+                if submitted:
+                    remove_task(remove_task_name)
+                    st.session_state.remove_task_success = True
+                    st.session_state.removed_task_name = remove_task_name
+                    st.rerun()
+            
+            # Show success message outside the form
+            if st.session_state.remove_task_success:
+                st.success(f"✅ Task '{st.session_state.removed_task_name}' removed!")
+                st.session_state.remove_task_success = False  # Reset the flag
         else:
             st.info("No tasks to remove")
-    
+        
     with col2:
         st.markdown("### ⚡ Bulk Update")
+        
+        # Initialize session state for bulk update
+        if "bulk_tasks_selected" not in st.session_state:
+            st.session_state.bulk_tasks_selected = []
+        if "bulk_status_selected" not in st.session_state:
+            st.session_state.bulk_status_selected = "not started"
+        if "bulk_update_success" not in st.session_state:
+            st.session_state.bulk_update_success = False
+        
         if not filtered_df.empty:
-            tasks_to_update = st.multiselect("Select Tasks", filtered_df["Name"])
-            new_status = st.selectbox("New Status", ["not started", "in progress", "done"])
+            # Create form to prevent auto-rerun
+            with st.form("bulk_update_form"):
+                tasks_to_update = st.multiselect(
+                    "Select Tasks", 
+                    filtered_df["Name"],
+                    default=st.session_state.bulk_tasks_selected if st.session_state.bulk_tasks_selected else []
+                )
+                new_status = st.selectbox(
+                    "New Status", 
+                    ["not started", "in progress", "done"],
+                    index=["not started", "in progress", "done"].index(st.session_state.bulk_status_selected)
+                )
+                
+                submitted = st.form_submit_button("🔄 Update Selected")
+                
+                if submitted and tasks_to_update:
+                    for task in tasks_to_update:
+                        update_task_status(task, new_status)
+                    
+                    # Update session state - keep the selected tasks
+                    st.session_state.bulk_tasks_selected = []  # Keep selection after update
+                    st.session_state.bulk_status_selected = new_status  # Keep the selected status
+                    st.session_state.bulk_update_success = True
+                    
+                    st.rerun()
             
-            if st.button("🔄 Update Selected") and tasks_to_update:
-                for task in tasks_to_update:
-                    update_task_status(task, new_status)
-                st.success(f"✅ Updated {len(tasks_to_update)} tasks!")
-                st.rerun()
+            # Show success message outside the form
+            if st.session_state.bulk_update_success:
+                st.success(f"✅ Tasks updated successfully!")
+                st.session_state.bulk_update_success = False  # Reset the flag
+                
         else:
             st.info("No tasks available")
     
