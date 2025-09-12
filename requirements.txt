@@ -6,7 +6,6 @@ streamlit-autorefresh
 psycopg2-binary
 python-dotenv
 supabase
-json
 time
 plotly
 dataclass
