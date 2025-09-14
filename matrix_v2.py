@@ -335,7 +335,7 @@ def update_urgency(df):
     df = df.copy()
     dates = pd.to_datetime(df["DueDate"])
     days_till_due = (dates - pd.to_datetime(datetime.date.today())).dt.days
-    df["urgency"] = 1/(1+(days_till_due/(df["EstEffort"]*15)))
+    df["urgency"] = 1/(1+(days_till_due/(df["EstEffort"]*5)))
     df["Urgency"] = df["urgency"]
     return df
 
@@ -470,7 +470,7 @@ def compute_heavy_operations(df_hash):
         # Update urgency
         dates = pd.to_datetime(df_copy["DueDate"])
         days_till_due = (dates - pd.to_datetime(datetime.date.today())).dt.days
-        df_copy["urgency"] = 1/(1+(days_till_due/(df_copy["EstEffort"]*15)))
+        df_copy["urgency"] = 1/(1+(days_till_due/(df_copy["EstEffort"]*5)))
         df_copy["Urgency"] = df_copy["urgency"]
         
         # Compute weights
