@@ -14,11 +14,42 @@ from plotly.subplots import make_subplots
 import time
 from dataclasses import dataclass
 from typing import List, Dict, Optional
+import re
 
 # Load environment variables
-SUPABASE_URL = st.secrets["SUPABASE_URL"]
-SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+try:
+    SUPABASE_URL = st.secrets["SUPABASE_URL"]
+    SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+except KeyError as e:
+    st.error(f"❌ Missing configuration: {str(e)}. Please check your secrets.")
+    st.stop()
+except Exception as e:
+    st.error(f"❌ Could not connect to Supabase: {str(e)}")
+    st.stop()
+
+
+def validate_password(password):
+    """Validate password complexity"""
+    errors = []
+    
+    if len(password) < 8:
+        errors.append("Password must be at least 8 characters long")
+    
+    if not re.search(r"[A-Z]", password):
+        errors.append("Password must contain at least one uppercase letter")
+    
+    if not re.search(r"[a-z]", password):
+        errors.append("Password must contain at least one lowercase letter")
+    
+    if not re.search(r"\d", password):
+        errors.append("Password must contain at least one number")
+    
+    if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", password):
+        errors.append("Password must contain at least one special character")
+    
+    return errors
+
 
 # Authentication Section
 if "user" not in st.session_state:
@@ -53,7 +84,7 @@ if st.session_state["user"] is None:
                 font-weight: 600;
             ">🎯MyFlow</h1>
     """, unsafe_allow_html=True)
-    
+
     # Authentication tabs
     auth_tab1, auth_tab2 = st.tabs(["Sign In", "Create Account"])
     
@@ -103,22 +134,26 @@ if st.session_state["user"] is None:
                 if email and password and confirm_password:
                     if password != confirm_password:
                         st.error("❌ Passwords don't match")
-                    elif len(password) < 6:
-                        st.error("❌ Password must be at least 6 characters")
-                    elif not terms_accepted:
-                        st.error("❌ Please accept the terms and conditions")
                     else:
-                        try:
-                            with st.spinner("Creating your account..."):
-                                res = supabase.auth.sign_up({
-                                    "email": email,
-                                    "password": password
-                                })
-                                st.success("🎉 Account created successfully! Please sign in.")
-                                time.sleep(2)
-                                st.rerun()
-                        except Exception as e:
-                            st.error(f"❌ Account creation failed: {str(e)}")
+                        # Validate password complexity
+                        password_errors = validate_password(password)
+                        if password_errors:
+                            for error in password_errors:
+                                st.error(f"❌ {error}")
+                        elif not terms_accepted:
+                            st.error("❌ Please accept the terms and conditions")
+                        else:
+                            try:
+                                with st.spinner("Creating your account..."):
+                                    res = supabase.auth.sign_up({
+                                        "email": email,
+                                        "password": password
+                                    })
+                                    st.success("🎉 Account created successfully! Please sign in.")
+                                    time.sleep(2)
+                                    st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ Account creation failed: {str(e)}")
                 else:
                     st.error("❌ Please fill in all fields")
     
@@ -215,55 +250,84 @@ class TaskMetrics:
     burnout_risk: float
 
 # Enhanced Data Handling
-@st.cache_data(ttl=5)
+@st.cache_data(ttl=60)  # Changed from 5 seconds to 60 seconds
 def get_df():
     if st.session_state["user"] is None:
         return pd.DataFrame()
 
-    response = supabase.table("tasks")\
-        .select("*")\
-        .eq("user_id", st.session_state["user"].id)\
-        .execute()
-    df = pd.DataFrame(response.data)
+    try:
+        response = supabase.table("tasks").select("*").eq("user_id", st.session_state["user"].id).execute()
+        df = pd.DataFrame(response.data)
+    except Exception as e:
+        st.error(f"❌ Failed to fetch tasks: {str(e)}")
+        return pd.DataFrame()
+
     if not df.empty and "DueDate" in df.columns:
-        df["DueDate"] = pd.to_datetime(df["DueDate"])
+        df["DueDate"] = pd.to_datetime(df["DueDate"], errors="coerce")
         df["DaysTillDue"] = (df["DueDate"] - pd.to_datetime(datetime.date.today())).dt.days
+    
     return df
+
+
+def clear_data_cache():
+    """Clear the cached data to force refresh"""
+    get_df.clear()
+
 
 def save_df(new_task_df):
     if st.session_state["user"] is None:
         return False
-    
-    # Fetch existing task names for the current user
-    existing_tasks = supabase.table("tasks").select("Name").eq("user_id", st.session_state["user"].id).execute()
-    existing_names = {task["Name"] for task in existing_tasks.data}
+
+    try:
+        existing_tasks = supabase.table("tasks").select("Name").eq("user_id", st.session_state["user"].id).execute()
+        existing_names = {task["Name"] for task in existing_tasks.data}
+    except Exception as e:
+        st.error(f"❌ Could not check existing tasks: {str(e)}")
+        return False
 
     for _, row in new_task_df.iterrows():
         task_name = row["Name"]
         if task_name in existing_names:
-            st.error(f"❌ Task name '{task_name}' already exists for your account. Please choose a different name.")
+            st.error(f"❌ Task name '{task_name}' already exists.")
             return False
-        
-        # Add the user_id to the task before saving
-        row_dict = row.to_dict()
-        row_dict["user_id"] = st.session_state["user"].id
-        supabase.table("tasks").insert(row_dict).execute()
-    
+
+        try:
+            row_dict = row.to_dict()
+            row_dict["user_id"] = st.session_state["user"].id
+            supabase.table("tasks").insert(row_dict).execute()
+        except Exception as e:
+            st.error(f"❌ Failed to save task '{task_name}': {str(e)}")
+            return False
+
+    # Clear cache to show new data immediately
+    clear_data_cache()
     return True
 
 
 def update_task_status(task_name, new_status):
     if st.session_state["user"] is None:
         return
-    supabase.table("tasks").update({"Status": new_status}).eq("Name", task_name).eq("user_id", st.session_state["user"].id).execute()
+    try:
+        supabase.table("tasks").update({"Status": new_status}).eq("Name", task_name).eq("user_id", st.session_state["user"].id).execute()
+        # Clear cache to show updated data immediately
+        clear_data_cache()
+    except Exception as e:
+        st.error(f"❌ Could not update task '{task_name}': {str(e)}")
 
 def remove_task(task_name):
     if st.session_state["user"] is None:
         return
-    supabase.table("tasks").delete().eq("Name", task_name).eq("user_id", st.session_state["user"].id).execute()
+    try:
+        supabase.table("tasks").delete().eq("Name", task_name).eq("user_id", st.session_state["user"].id).execute()
+        # Clear cache to show updated data immediately
+        clear_data_cache()
+    except Exception as e:
+        st.error(f"❌ Could not delete task '{task_name}': {str(e)}")
+
 
 def importance_computer(goal_alignment, impact, consequence_of_neglect, effort, w1=0.4, w2=0.3, w3=0.2, w4=0.1):
     return w1*goal_alignment + w2*impact + w3*consequence_of_neglect + w4*effort
+
 
 def update_urgency(df):
     if df.empty:
@@ -275,6 +339,7 @@ def update_urgency(df):
     df["Urgency"] = df["urgency"]
     return df
 
+
 def weight_computer(df, w1=0.57, w2=0.3, w3=0.13):
     if df.empty:
         return pd.DataFrame(columns=["Task Name", "Task Weight"])
@@ -282,6 +347,7 @@ def weight_computer(df, w1=0.57, w2=0.3, w3=0.13):
         "Task Name": df["Name"],
         "Task Weight": (w1*df["Importance"] + w2*df["Urgency"] + w3*(df["Importance"]*df["Urgency"]))
     })
+
 
 def calculate_metrics(df) -> TaskMetrics:
     if df.empty:
@@ -394,7 +460,33 @@ st.markdown('<div class="main-header"><h1>🎯 Productivity Command Center</h1><
 
 # Load and process data
 df = get_df()
-df = update_urgency(df)
+
+@st.cache_data(ttl=60)
+def compute_heavy_operations(df_hash):
+    """Compute expensive operations and cache them"""
+    df_copy = df.copy() if not df.empty else pd.DataFrame()
+    
+    if not df_copy.empty:
+        # Update urgency
+        dates = pd.to_datetime(df_copy["DueDate"])
+        days_till_due = (dates - pd.to_datetime(datetime.date.today())).dt.days
+        df_copy["urgency"] = 1/(1+(days_till_due/(df_copy["EstEffort"]*15)))
+        df_copy["Urgency"] = df_copy["urgency"]
+        
+        # Compute weights
+        weights_df = pd.DataFrame({
+            "Task Name": df_copy["Name"],
+            "Task Weight": (0.57*df_copy["Importance"] + 0.3*df_copy["Urgency"] + 0.13*(df_copy["Importance"]*df_copy["Urgency"]))
+        }).sort_values("Task Weight", ascending=False)
+        
+        return df_copy, weights_df
+    
+    return df_copy, pd.DataFrame()
+
+# Use hash of dataframe to cache heavy computations
+df_hash = hash(str(df.values.tobytes())) if not df.empty else 0
+df, weights_df = compute_heavy_operations(df_hash)
+
 
 # Initialize session state
 if "add_open" not in st.session_state:
@@ -651,11 +743,14 @@ with tab2:
 
         # Priority ranking
         st.markdown("### 🏆 Priority Rankings")
+        if not filtered_df.empty and not weights_df.empty:
+            filtered_weights = weights_df[weights_df["Task Name"].isin(filtered_df["Name"])].copy()
+            filtered_weights["Task Weight"] = filtered_weights["Task Weight"].clip(0, 1)
+            filtered_weights = filtered_weights.sort_values("Task Weight", ascending=False)
+        else:
+            filtered_weights = pd.DataFrame(columns=["Task Name", "Task Weight"])
         
-        weights_df = weight_computer(filtered_df).sort_values("Task Weight", ascending=False)
-        weights_df["Task Weight"] = weights_df["Task Weight"].clip(0, 1)
-        
-        bar_chart = alt.Chart(weights_df).mark_bar(
+        bar_chart = alt.Chart(filtered_weights).mark_bar(
             color='#667eea',
             cornerRadiusTopLeft=3,
             cornerRadiusTopRight=3
@@ -707,7 +802,9 @@ with tab3:
         if submitted and name:
             est_effort = 1 - 1/(1 + task_time)
             due_date = datetime.date.today() + datetime.timedelta(days=days_till_due)
-            urgency = round(1 / (1 + (days_till_due / (est_effort * 15))), 2)
+            if days_till_due < 0:
+                days_till_due = 0
+            urgency = round(1 / (1 + (days_till_due / (est_effort * 5))), 2)
             importance = round(importance_computer(goal_alignment, impact, consequence, est_effort), 2)
             roi = round(impact / (impact + np.log2(1 + est_effort)), 2)
             
@@ -740,28 +837,42 @@ with tab3:
     with col1:
         st.markdown("### 🗑 Remove Task")
         
-        # Initialize session state for remove task success
+        # Initialize session state
         if "remove_task_success" not in st.session_state:
             st.session_state.remove_task_success = False
+        if "form_submitted_successfully" not in st.session_state:
+            st.session_state.form_submitted_successfully = False
         
         if not filtered_df.empty:
-            with st.form("remove_task_form"):
+            # Use the success flag to control form clearing
+            clear_form = st.session_state.form_submitted_successfully
+            
+            with st.form("remove_task_form", clear_on_submit=clear_form):
                 remove_task_name = st.selectbox("Select Task to Remove", filtered_df["Name"])
+                confirm_delete = st.checkbox("⚠️ I confirm I want to delete this task")
                 submitted = st.form_submit_button("🗑 Remove Task", type="secondary")
                 
                 if submitted:
-                    remove_task(remove_task_name)
-                    st.session_state.remove_task_success = True
-                    st.session_state.removed_task_name = remove_task_name
-                    st.rerun()
+                    if confirm_delete:
+                        remove_task(remove_task_name)
+                        st.session_state.remove_task_success = True
+                        st.session_state.removed_task_name = remove_task_name
+                        st.session_state.form_submitted_successfully = True
+                        st.rerun()
+                    else:
+                        # Reset the success flag to prevent form clearing
+                        st.session_state.form_submitted_successfully = False
+                        st.error("❌ Please confirm deletion by checking the checkbox")
             
-            # Show success message outside the form
+            # Show success message and reset form state
             if st.session_state.remove_task_success:
                 st.success(f"✅ Task '{st.session_state.removed_task_name}' removed!")
-                st.session_state.remove_task_success = False  # Reset the flag
+                st.session_state.remove_task_success = False
+                st.session_state.form_submitted_successfully = False  # Reset for next time
         else:
             st.info("No tasks to remove")
-        
+
+            
     with col2:
         st.markdown("### ⚡ Bulk Update")
         
