@@ -744,6 +744,7 @@ with tab2:
         # Priority ranking
         st.markdown("### 🏆 Priority Rankings")
         if not filtered_df.empty and not weights_df.empty:
+            filtered_df = filtered_df[filtered_df["Status"] != "done"]
             filtered_weights = weights_df[weights_df["Task Name"].isin(filtered_df["Name"])].copy()
             filtered_weights["Task Weight"] = filtered_weights["Task Weight"].clip(0, 1)
             filtered_weights = filtered_weights.sort_values("Task Weight", ascending=False)
