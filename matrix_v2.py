@@ -15,6 +15,8 @@ import time
 from dataclasses import dataclass
 from typing import List, Dict, Optional
 import re
+from streamlit_cookies import CookieManager
+import json
 
 # Load environment variables
 try:
@@ -50,47 +52,87 @@ def validate_password(password):
     
     return errors
 
+# Initialize cookie manager
+cookies = CookieManager()
 
-# Authentication Section
+# Authentication Section with Cookie Persistence
 if "user" not in st.session_state:
     st.session_state["user"] = None
 
+# Check for auth cookie on page load
+if st.session_state["user"] is None:
+    auth_cookie = cookies.get("supabase_auth")
+    if auth_cookie:
+        try:
+            auth_data = json.loads(auth_cookie)
+            
+            # Validate with Supabase using stored tokens
+            response = supabase.auth.set_session(auth_data["access_token"], auth_data["refresh_token"])
+            if response.user:
+                st.session_state["user"] = response.user
+        except Exception:
+            # Clear invalid cookie
+            cookies.delete("supabase_auth")
+
 # Professional Authentication UI
 if st.session_state["user"] is None:
-    # Create a centered authentication container
+    # Create a centered authentication container with improved CSS
     st.markdown("""
-    <div style="
+    <style>
+    .auth-container {
         display: flex;
         justify-content: center;
         align-items: center;
-        min-height: 25vh;
+        min-height: 30vh;
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        margin: -1rem;
+        margin: -1rem -1rem 2rem -1rem;
         padding: 2rem;
-    ">
-        <div style="
-            background: transparent;
-            padding: 3rem;
-            border-radius: 0px;
-            box-shadow: 0 0px 0px rgba(0,0,0,0.1);
-            width: 100%;
-            max-width: 400px;
-            text-align: center;
-        ">
-            <h1 style="
-                color: #FFFFFF;
-                margin-bottom: 0rem;
-                font-size: 5rem;
-                font-weight: 600;
-            ">🎯MyFlow</h1>
+        border-radius: 0 0 20px 20px;
+    }
+    .auth-box {
+        background: rgba(255, 255, 255, 0.95);
+        padding: 2rem;
+        border-radius: 15px;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+        backdrop-filter: blur(10px);
+        width: 100%;
+        max-width: 450px;
+        text-align: center;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+    }
+    .auth-title {
+        color: #667eea;
+        margin-bottom: 1.5rem;
+        font-size: 3.5rem;
+        font-weight: 700;
+        text-shadow: 0 2px 4px rgba(102, 126, 234, 0.3);
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+    }
+    .auth-subtitle {
+        color: #6c757d;
+        margin-bottom: 2rem;
+        font-size: 1.1rem;
+        font-weight: 400;
+    }
+    </style>
+    
+    <div class="auth-container">
+        <div class="auth-box">
+            <h1 class="auth-title">🎯MyFlow</h1>
+            <p class="auth-subtitle">Your Productivity Command Center</p>
     """, unsafe_allow_html=True)
 
-    # Authentication tabs
-    auth_tab1, auth_tab2 = st.tabs(["Sign In", "Create Account"])
+    # Authentication tabs with enhanced styling
+    auth_tab1, auth_tab2 = st.tabs(["🔐 Sign In", "✨ Create Account"])
     
     with auth_tab1:
         with st.form("login_form", clear_on_submit=False):
-            st.markdown("### Sign In to Your Account")
+            st.markdown("### Welcome Back!")
+            st.markdown("Sign in to access your productivity dashboard")
+            
             email = st.text_input("📧 Email Address", placeholder="Enter your email")
             password = st.text_input("🔒 Password", type="password", placeholder="Enter your password")
             
@@ -98,7 +140,7 @@ if st.session_state["user"] is None:
             with col1:
                 remember_me = st.checkbox("Remember me")
             with col2:
-                st.markdown("[Forgot password?](#)")
+                st.markdown('<p style="text-align: right; margin: 0;"><a href="#" style="color: #667eea; text-decoration: none; font-size: 0.9rem;">Forgot password?</a></p>', unsafe_allow_html=True)
             
             login_btn = st.form_submit_button("🚀 Sign In", type="primary", use_container_width=True)
             
@@ -111,6 +153,15 @@ if st.session_state["user"] is None:
                                 "password": password
                             })
                             st.session_state["user"] = res.user
+                            
+                            # Store auth data in cookie for persistence (no expiration params)
+                            if remember_me and res.session:
+                                auth_data = {
+                                    "access_token": res.session.access_token,
+                                    "refresh_token": res.session.refresh_token
+                                }
+                                cookies.set("supabase_auth", json.dumps(auth_data))
+                            
                             st.success("✅ Welcome back!")
                             time.sleep(1)
                             st.rerun()
@@ -121,10 +172,22 @@ if st.session_state["user"] is None:
     
     with auth_tab2:
         with st.form("signup_form", clear_on_submit=False):
-            st.markdown("### Create Your Account")
+            st.markdown("### Join MyFlow Today!")
+            st.markdown("Create your account and start optimizing your productivity")
+            
             email = st.text_input("📧 Email Address", placeholder="Enter your email")
-            password = st.text_input("🔒 Password", type="password", placeholder="Create a password")
+            password = st.text_input("🔒 Password", type="password", placeholder="Create a strong password")
             confirm_password = st.text_input("🔒 Confirm Password", type="password", placeholder="Confirm your password")
+            
+            # Password requirements info
+            with st.expander("📋 Password Requirements"):
+                st.markdown("""
+                - At least 8 characters long
+                - One uppercase letter (A-Z)
+                - One lowercase letter (a-z)
+                - One number (0-9)
+                - One special character (!@#$%^&*...)
+                """)
             
             terms_accepted = st.checkbox("I agree to the Terms of Service and Privacy Policy")
             
@@ -149,7 +212,10 @@ if st.session_state["user"] is None:
                                         "email": email,
                                         "password": password
                                     })
-                                    st.success("🎉 Account created successfully! Please sign in.")
+                                    if res.user:
+                                        st.success("🎉 Account created successfully! Please check your email for verification.")
+                                    else:
+                                        st.success("🎉 Account created successfully! Please sign in.")
                                     time.sleep(2)
                                     st.rerun()
                             except Exception as e:
@@ -182,8 +248,11 @@ else:
         </div>
         """.format(st.session_state['user'].email), unsafe_allow_html=True)
         
+        st.info("💡 **Tip:** Use 'R' key to refresh instead of Ctrl+R to stay logged in")
+        
         if st.button("🚪 Sign Out", use_container_width=True):
             supabase.auth.sign_out()
+            cookies.delete("supabase_auth")  # Clear the auth cookie
             st.session_state["user"] = None
             st.rerun()
 
