@@ -213,7 +213,7 @@ if st.session_state["user"] is None:
                                         "password": password
                                     })
                                     if res.user:
-                                        st.success("🎉 Account created successfully! Please check your email for verification.")
+                                        st.success("🎉 Account created successfully! Please check your email for verification, then head to the sign in page.")
                                     else:
                                         st.success("🎉 Account created successfully! Please sign in.")
                                     time.sleep(2)
@@ -249,12 +249,42 @@ else:
         """.format(st.session_state['user'].email), unsafe_allow_html=True)
         
         st.info("💡 **Tip:** Use 'R' key to refresh instead of Ctrl+R to stay logged in")
-        
+
         if st.button("🚪 Sign Out", use_container_width=True):
             supabase.auth.sign_out()
             cookies.delete("supabase_auth")  # Clear the auth cookie
             st.session_state["user"] = None
             st.rerun()
+
+def update_days_till_due_for_all_tasks():
+    """Update DaysTillDue for all user's tasks in the database"""
+    if st.session_state["user"] is None:
+        return False
+    
+    try:
+        # Get all user tasks (only need id and DueDate)
+        response = supabase.table("tasks").select("Name, DueDate").eq("user_id", st.session_state["user"].id).execute()
+        
+        today = datetime.date.today()
+        update_count = 0
+        
+        for task in response.data:
+            if task.get("DueDate"):
+                due_date = pd.to_datetime(task["DueDate"]).date()
+                days_till_due = (due_date - today).days
+                
+                # Update in database
+                supabase.table("tasks").update({
+                    "DaysTillDue": days_till_due
+                }).eq("Name", task["Name"]).execute()
+                update_count += 1
+        
+        clear_data_cache()
+        return True
+        
+    except Exception as e:
+        st.error(f"❌ Failed to update days till due: {str(e)}")
+        return False
 
 # AI Insights Engine
 class ProductivityAI:
@@ -333,7 +363,6 @@ def get_df():
 
     if not df.empty and "DueDate" in df.columns:
         df["DueDate"] = pd.to_datetime(df["DueDate"], errors="coerce")
-        df["DaysTillDue"] = (df["DueDate"] - pd.to_datetime(datetime.date.today())).dt.days
     
     return df
 
@@ -529,7 +558,14 @@ st.markdown('<div class="main-header"><h1>🎯 Productivity Command Center</h1><
 
 # Load and process data
 df = get_df()
+# Auto-update days till due once per session
+if "days_updated_today" not in st.session_state:
+    st.session_state["days_updated_today"] = False
 
+if not st.session_state["days_updated_today"]:
+    if update_days_till_due_for_all_tasks():
+        st.session_state["days_updated_today"] = True
+    
 @st.cache_data(ttl=60)
 def compute_heavy_operations(df_hash):
     """Compute expensive operations and cache them"""
