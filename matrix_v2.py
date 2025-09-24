@@ -433,6 +433,8 @@ def update_urgency(df):
     df = df.copy()
     dates = pd.to_datetime(df["DueDate"])
     days_till_due = (dates - pd.to_datetime(datetime.date.today())).dt.days
+    if days_till_due < 0:
+        days_till_due = 0
     df["urgency"] = 1/(1+(days_till_due/(df["EstEffort"]*5)))
     df["Urgency"] = df["urgency"]
     return df
