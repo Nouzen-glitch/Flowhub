@@ -257,26 +257,31 @@ else:
             st.rerun()
 
 def update_days_till_due_for_all_tasks():
-    """Update DaysTillDue for all user's tasks in the database"""
+    """Update DaysTillDue AND Urgency for all user's tasks in the database"""
     if st.session_state["user"] is None:
         return False
     
     try:
-        # Get all user tasks (only need id and DueDate)
-        response = supabase.table("tasks").select("Name, DueDate").eq("user_id", st.session_state["user"].id).execute()
+        # Get all user tasks with required fields
+        response = supabase.table("tasks").select("Name, DueDate, EstEffort").eq("user_id", st.session_state["user"].id).execute()
         
         today = datetime.date.today()
         update_count = 0
         
         for task in response.data:
-            if task.get("DueDate"):
+            if task.get("DueDate") and task.get("EstEffort"):
                 due_date = pd.to_datetime(task["DueDate"]).date()
-                days_till_due = (due_date - today).days
+                days_till_due = max(0, (due_date - today).days)
                 
-                # Update in database
+                # Calculate urgency
+                urgency = round(1 / (1 + (days_till_due / (task["EstEffort"] * 5))), 3)
+                
+                # Update both fields in database
                 supabase.table("tasks").update({
-                    "DaysTillDue": days_till_due
-                }).eq("Name", task["Name"]).execute()
+                    "DaysTillDue": days_till_due,
+                    "Urgency": urgency
+                }).eq("Name", task["Name"]).eq("user_id", st.session_state["user"].id).execute()
+                
                 update_count += 1
         
         clear_data_cache()
@@ -285,6 +290,7 @@ def update_days_till_due_for_all_tasks():
     except Exception as e:
         st.error(f"❌ Failed to update days till due: {str(e)}")
         return False
+
 
 # AI Insights Engine
 class ProductivityAI:
@@ -361,8 +367,17 @@ def get_df():
         st.error(f"❌ Failed to fetch tasks: {str(e)}")
         return pd.DataFrame()
 
-    if not df.empty and "DueDate" in df.columns:
-        df["DueDate"] = pd.to_datetime(df["DueDate"], errors="coerce")
+    if not df.empty:
+        if "DueDate" in df.columns:
+            df["DueDate"] = pd.to_datetime(df["DueDate"], errors="coerce")
+        
+        # CRITICAL FIX: Always recalculate urgency from fresh data
+        if "EstEffort" in df.columns and "DueDate" in df.columns:
+            today = pd.to_datetime(datetime.date.today())
+            days_till_due = (df["DueDate"] - today).dt.days
+            days_till_due = days_till_due.clip(lower=0)  # Prevent negative values
+            df["Urgency"] = 1 / (1 + (days_till_due / (df["EstEffort"] * 5)))
+            df["Urgency"] = df["Urgency"].round(3)
     
     return df
 
@@ -392,6 +407,15 @@ def save_df(new_task_df):
         try:
             row_dict = row.to_dict()
             row_dict["user_id"] = st.session_state["user"].id
+            
+            # CRITICAL FIX: Ensure urgency is calculated correctly before saving
+            if "DueDate" in row_dict and "EstEffort" in row_dict:
+                due_date = pd.to_datetime(row_dict["DueDate"])
+                today = pd.to_datetime(datetime.date.today())
+                days_till_due = max(0, (due_date - today).days)
+                row_dict["Urgency"] = round(1 / (1 + (days_till_due / (row_dict["EstEffort"] * 5))), 3)
+                row_dict["DaysTillDue"] = days_till_due
+            
             supabase.table("tasks").insert(row_dict).execute()
         except Exception as e:
             st.error(f"❌ Failed to save task '{task_name}': {str(e)}")
@@ -404,13 +428,37 @@ def save_df(new_task_df):
 
 def update_task_status(task_name, new_status):
     if st.session_state["user"] is None:
-        return
+        return False
+        
     try:
-        supabase.table("tasks").update({"Status": new_status}).eq("Name", task_name).eq("user_id", st.session_state["user"].id).execute()
-        # Clear cache to show updated data immediately
+        # Get current task data for urgency recalculation
+        current_task = supabase.table("tasks").select("*").eq("Name", task_name).eq("user_id", st.session_state["user"].id).single().execute()
+        
+        if current_task.data:
+            # Recalculate urgency based on current date
+            task_data = current_task.data
+            if task_data.get("DueDate") and task_data.get("EstEffort"):
+                due_date = pd.to_datetime(task_data["DueDate"])
+                today = pd.to_datetime(datetime.date.today())
+                days_till_due = max(0, (due_date - today).days)
+                new_urgency = round(1 / (1 + (days_till_due / (task_data["EstEffort"] * 5))), 3)
+                
+                # Update both status and urgency
+                supabase.table("tasks").update({
+                    "Status": new_status,
+                    "Urgency": new_urgency,
+                    "DaysTillDue": days_till_due
+                }).eq("Name", task_name).eq("user_id", st.session_state["user"].id).execute()
+            else:
+                # Just update status if no date/effort data
+                supabase.table("tasks").update({"Status": new_status}).eq("Name", task_name).eq("user_id", st.session_state["user"].id).execute()
+        
         clear_data_cache()
+        return True
+        
     except Exception as e:
         st.error(f"❌ Could not update task '{task_name}': {str(e)}")
+        return False
 
 def remove_task(task_name):
     if st.session_state["user"] is None:
@@ -433,8 +481,6 @@ def update_urgency(df):
     df = df.copy()
     dates = pd.to_datetime(df["DueDate"])
     days_till_due = (dates - pd.to_datetime(datetime.date.today())).dt.days
-    if days_till_due < 0:
-        days_till_due = 0
     df["urgency"] = 1/(1+(days_till_due/(df["EstEffort"]*5)))
     df["Urgency"] = df["urgency"]
     return df
@@ -569,31 +615,46 @@ if not st.session_state["days_updated_today"]:
         st.session_state["days_updated_today"] = True
     
 @st.cache_data(ttl=60)
-def compute_heavy_operations(df_hash):
-    """Compute expensive operations and cache them"""
-    df_copy = df.copy() if not df.empty else pd.DataFrame()
+def get_processed_data(df):
+    """Process dataframe with current calculations - no caching to avoid sync issues"""
+    if df.empty:
+        return df.copy(), pd.DataFrame()
     
-    if not df_copy.empty:
-        # Update urgency
-        dates = pd.to_datetime(df_copy["DueDate"])
-        days_till_due = (dates - pd.to_datetime(datetime.date.today())).dt.days
-        df_copy["urgency"] = 1/(1+(days_till_due/(df_copy["EstEffort"]*5)))
-        df_copy["Urgency"] = df_copy["urgency"]
-        
-        # Compute weights
+    df_processed = df.copy()
+    
+    # Ensure urgency is current (this should already be done in get_df, but double-check)
+    if "DueDate" in df_processed.columns and "EstEffort" in df_processed.columns:
+        today = pd.to_datetime(datetime.date.today())
+        dates = pd.to_datetime(df_processed["DueDate"])
+        days_till_due = (dates - today).dt.days.clip(lower=0)
+        df_processed["Urgency"] = (1 / (1 + (days_till_due / (df_processed["EstEffort"] * 5)))).round(3)
+    
+    # Calculate weights
+    if not df_processed.empty:
         weights_df = pd.DataFrame({
-            "Task Name": df_copy["Name"],
-            "Task Weight": (0.57*df_copy["Importance"] + 0.3*df_copy["Urgency"] + 0.13*(df_copy["Importance"]*df_copy["Urgency"]))
+            "Task Name": df_processed["Name"],
+            "Task Weight": (0.57 * df_processed["Importance"] + 
+                          0.3 * df_processed["Urgency"] + 
+                          0.13 * (df_processed["Importance"] * df_processed["Urgency"]))
         }).sort_values("Task Weight", ascending=False)
-        
-        return df_copy, weights_df
+    else:
+        weights_df = pd.DataFrame(columns=["Task Name", "Task Weight"])
     
-    return df_copy, pd.DataFrame()
+    return df_processed, weights_df
 
-# Use hash of dataframe to cache heavy computations
-df_hash = hash(str(df.values.tobytes())) if not df.empty else 0
-df, weights_df = compute_heavy_operations(df_hash)
 
+df = get_df()
+
+# Auto-update days till due once per session
+if "days_updated_today" not in st.session_state:
+    st.session_state["days_updated_today"] = False
+
+if not st.session_state["days_updated_today"]:
+    if update_days_till_due_for_all_tasks():
+        st.session_state["days_updated_today"] = True
+
+# Process data without problematic caching
+df, weights_df = get_processed_data(df)
 
 # Initialize session state
 if "add_open" not in st.session_state:
