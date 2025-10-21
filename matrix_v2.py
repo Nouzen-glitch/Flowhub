@@ -20,8 +20,10 @@ import json
 
 # Load environment variables
 try:
-    SUPABASE_URL = st.secrets["SUPABASE_URL"]
-    SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+    #SUPABASE_URL = st.secrets["SUPABASE_URL"]
+    #SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+    SUPABASE_URL = "https://xkzgtehagcvzghuupfjm.supabase.co"
+    SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inhremd0ZWhhZ2N2emdodXVwZmptIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTc2MDQ5MzEsImV4cCI6MjA3MzE4MDkzMX0.uuoMoqn5VIajJ66aGf2l1_NGAwbzBlr7TW3-KqKbmCw"
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 except KeyError as e:
     st.error(f"❌ Missing configuration: {str(e)}. Please check your secrets.")
@@ -912,8 +914,8 @@ with tab2:
         # Priority ranking
         st.markdown("### 🏆 Priority Rankings")
         if not filtered_df.empty and not weights_df.empty:
-            filtered_df = filtered_df[filtered_df["Status"] != "done"]
-            filtered_weights = weights_df[weights_df["Task Name"].isin(filtered_df["Name"])].copy()
+            filtered_df_not_done_tasks = filtered_df[filtered_df["Status"] != "done"].copy()
+            filtered_weights = weights_df[weights_df["Task Name"].isin(filtered_df_not_done_tasks["Name"])].copy()
             filtered_weights["Task Weight"] = filtered_weights["Task Weight"].clip(0, 1)
             filtered_weights = filtered_weights.sort_values("Task Weight", ascending=False)
         else:
