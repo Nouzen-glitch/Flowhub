@@ -292,8 +292,8 @@ def update_days_till_due_for_all_tasks():
         return False
 
 
-# AI Insights Engine
-class ProductivityAI:
+#Insights Engine
+class Productivity:
     @staticmethod
     def analyze_task_patterns(df):
         if df.empty:
@@ -767,18 +767,18 @@ with tab1:
         </div>
         """, unsafe_allow_html=True)
 
-    # AI Insights
+    #Insights
     if not filtered_df.empty:
-        ai_insights = ProductivityAI.analyze_task_patterns(filtered_df)
-        recommendations = ProductivityAI.generate_recommendations(ai_insights, filtered_df)
+        insights = Productivity.analyze_task_patterns(filtered_df)
+        recommendations = Productivity.generate_recommendations(insights, filtered_df)
         
-        st.markdown("### 🤖 AI Insights")
+        st.markdown("### 🤖 Insights")
         
         col1, col2 = st.columns(2)
         
         with col1:
             st.markdown("#### Performance Analysis")
-            productivity_score = ai_insights.get('productivity_score', 0)
+            productivity_score = insights.get('productivity_score', 0)
             if productivity_score >= 0.8:
                 st.markdown(f"<div class='recommendation-card'>🌟 Exceptional: {productivity_score:.1%} high-impact completion</div>", unsafe_allow_html=True)
             elif productivity_score >= 0.6:
