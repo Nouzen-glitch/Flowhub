@@ -20,10 +20,8 @@ import json
 
 # Load environment variables
 try:
-    #SUPABASE_URL = st.secrets["SUPABASE_URL"]
-    #SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
-    SUPABASE_URL = "https://xkzgtehagcvzghuupfjm.supabase.co"
-    SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inhremd0ZWhhZ2N2emdodXVwZmptIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTc2MDQ5MzEsImV4cCI6MjA3MzE4MDkzMX0.uuoMoqn5VIajJ66aGf2l1_NGAwbzBlr7TW3-KqKbmCw"
+    SUPABASE_URL = st.secrets["SUPABASE_URL"]
+    SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 except KeyError as e:
     st.error(f"❌ Missing configuration: {str(e)}. Please check your secrets.")
